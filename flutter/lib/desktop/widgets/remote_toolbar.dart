@@ -1167,8 +1167,8 @@ class _MonitorMenu extends StatelessWidget {
             tooltip: isMulti
                 ? ''
                 : isAllMonitors
-                    ? 'all monitors'
-                    : '#${i + 1} monitor',
+                    ? 'All monitors'
+                    : '#{${i + 1}} monitor',
             hMargin: isMulti ? null : 6,
             vMargin: isMulti ? null : 12,
             topLevel: false,
@@ -2484,6 +2484,8 @@ class _KeyboardMenu extends StatelessWidget {
             ? (v) async {
                 if (v != null) {
                   await stateGlobal.setInputSource(ffi.sessionId, v);
+                  // Release native input; see the macOS trade-offs in RemotePage.
+                  if (isMacOS) ffi.inputModel.enterOrLeave(false);
                   await ffi.ffiModel.checkDesktopKeyboardMode();
                   await ffi.inputModel.updateKeyboardMode();
                 }
@@ -2740,7 +2742,9 @@ class _RecordMenu extends StatelessWidget {
   Widget build(BuildContext context) {
     var ffi = Provider.of<FfiModel>(context);
     var recordingModel = Provider.of<RecordingModel>(context);
-    final visible =
+    final hideRecordingButton =
+        bind.mainGetLocalOption(key: kOptionHideRecordingButton) == 'Y';
+    final visible = !hideRecordingButton &&
         (recordingModel.start || ffi.permissions['recording'] != false);
     if (!visible) return Offstage();
     return _IconMenuButton(
@@ -2852,7 +2856,7 @@ class _IconMenuButtonState extends State<_IconMenuButton> {
         horizontal: widget.hMargin ?? _ToolbarTheme.buttonHMargin,
         vertical: widget.vMargin ?? _ToolbarTheme.buttonVMargin);
     button = Tooltip(
-      message: widget.tooltip,
+      message: translate(widget.tooltip),
       child: button,
     );
     if (widget.topLevel) {

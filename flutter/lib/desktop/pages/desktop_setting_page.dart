@@ -483,13 +483,16 @@ class _GeneralState extends State<_General> {
   }
 
   Widget other() {
-    final showAutoUpdate = isWindows && bind.mainIsInstalled();
+    final incomingOnly = bind.isIncomingOnly();
+    final outgoingOnly = bind.isOutgoingOnly();
+    final showAutoUpdate = (isWindows && bind.mainIsInstalled()) ||
+    (isMacOS && bind.mainIsInstalled() && bind.mainIsInstalledDaemon(prompt: false) && !bind.isCustomClient());
     final children = <Widget>[
-      if (!isWeb && !bind.isIncomingOnly())
+      if (!isWeb && !incomingOnly)
         _OptionCheckBox(context, 'Confirm before closing multiple tabs',
             kOptionEnableConfirmClosingTabs,
             isServer: false),
-      if (!bind.isIncomingOnly())
+      if (!incomingOnly)
         _OptionCheckBox(
           context,
           'allow-remote-toolbar-docking-any-edge',
@@ -499,9 +502,10 @@ class _GeneralState extends State<_General> {
             reloadAllWindows();
           },
         ),
-      _OptionCheckBox(context, 'Adaptive bitrate', kOptionEnableAbr),
+      if (!isWeb && !outgoingOnly)
+        _OptionCheckBox(context, 'Adaptive bitrate', kOptionEnableAbr),
       if (!isWeb) wallpaper(),
-      if (!isWeb && !bind.isIncomingOnly()) ...[
+      if (!isWeb && !incomingOnly) ...[
         _OptionCheckBox(
           context,
           'Open connection in new tab',
@@ -540,40 +544,40 @@ class _GeneralState extends State<_General> {
               isServer: false,
             ),
           ),
-        if (!isWeb && !bind.isCustomClient())
-          _OptionCheckBox(
-            context,
-            'Check for software update on startup',
-            kOptionEnableCheckUpdate,
-            isServer: false,
-          ),
-        if (showAutoUpdate)
-          _OptionCheckBox(
-            context,
-            'Auto update',
-            kOptionAllowAutoUpdate,
-            isServer: true,
-          ),
-        if (isWindows && !bind.isOutgoingOnly())
-          _OptionCheckBox(
-            context,
-            'Capture screen using DirectX',
-            kOptionDirectxCapture,
-          ),
-        if (!bind.isIncomingOnly()) ...[
-          _OptionCheckBox(
-            context,
-            'Enable UDP hole punching',
-            kOptionEnableUdpPunch,
-            isServer: false,
-          ),
-          _OptionCheckBox(
-            context,
-            'Enable IPv6 P2P connection',
-            kOptionEnableIpv6Punch,
-            isServer: false,
-          ),
-        ],
+      ],
+      if (!isWeb && !bind.isCustomClient())
+        _OptionCheckBox(
+          context,
+          'Check for software update on startup',
+          kOptionEnableCheckUpdate,
+          isServer: false,
+        ),
+      if (showAutoUpdate)
+        _OptionCheckBox(
+          context,
+          'Auto update',
+          kOptionAllowAutoUpdate,
+          isServer: true,
+        ),
+      if (isWindows && !outgoingOnly)
+        _OptionCheckBox(
+          context,
+          'Capture screen using DirectX',
+          kOptionDirectxCapture,
+        ),
+      if (!isWeb && !incomingOnly) ...[
+        _OptionCheckBox(
+          context,
+          'Enable UDP hole punching',
+          kOptionEnableUdpPunch,
+          isServer: false,
+        ),
+        _OptionCheckBox(
+          context,
+          'Enable IPv6 P2P connection',
+          kOptionEnableIpv6Punch,
+          isServer: false,
+        ),
       ],
     ];
 
@@ -1294,6 +1298,7 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
           reverse: true, enabled: enabled),
       ...directIp(context),
       whitelist(),
+      idWhitelist(),
       ...autoDisconnect(context),
       _OptionCheckBox(context, 'keep-awake-during-incoming-sessions-label',
           kOptionKeepAwakeDuringIncomingSessions,
@@ -1449,6 +1454,52 @@ class _SafetyState extends State<_Safety> with AutomaticKeepAliveClientMixin {
     }
 
     return tmpWrapper();
+  }
+
+  Widget idWhitelist() {
+    bool enabled = !locked;
+    RxBool hasIdWhitelist = idWhitelistNotEmpty().obs;
+    update() async {
+      hasIdWhitelist.value = idWhitelistNotEmpty();
+    }
+
+    onChanged(bool? checked) async {
+      changeIdWhiteList(callback: update);
+    }
+
+    final isOptFixed = isOptionFixed(kOptionIdWhitelist);
+    return GestureDetector(
+      child: Tooltip(
+        message: translate('id_whitelist_tip'),
+        child: Obx(() => Row(
+              children: [
+                Checkbox(
+                        value: hasIdWhitelist.value,
+                        onChanged: enabled && !isOptFixed ? onChanged : null)
+                    .marginOnly(right: 5),
+                Offstage(
+                  offstage: !hasIdWhitelist.value,
+                  child: MouseRegion(
+                    child: const Icon(Icons.warning_amber_rounded,
+                            color: Color.fromARGB(255, 255, 204, 0))
+                        .marginOnly(right: 5),
+                    cursor: SystemMouseCursors.click,
+                  ),
+                ),
+                Expanded(
+                    child: Text(
+                  translate('Use ID whitelisting'),
+                  style: TextStyle(color: disabledTextColor(context, enabled)),
+                ))
+              ],
+            )),
+      ),
+      onTap: enabled
+          ? () {
+              onChanged(!hasIdWhitelist.value);
+            }
+          : null,
+    ).marginOnly(left: _kCheckBoxLeftMargin);
   }
 
   Widget hide_cm(bool enabled) {
@@ -2411,17 +2462,20 @@ class _AboutState extends State<_About> {
       final version = await bind.mainGetVersion();
       final buildDate = await bind.mainGetBuildDate();
       final fingerprint = await bind.mainGetFingerprint();
+      final myId = await bind.mainGetMyId();
       return {
         'license': license,
         'version': version,
         'buildDate': buildDate,
-        'fingerprint': fingerprint
+        'fingerprint': fingerprint,
+        'myId': myId
       };
     }(), hasData: (data) {
       final license = data['license'].toString();
       final version = data['version'].toString();
       final buildDate = data['buildDate'].toString();
       final fingerprint = data['fingerprint'].toString();
+      final myId = data['myId'].toString();
       const linkStyle = TextStyle(decoration: TextDecoration.underline);
       final scrollController = ScrollController();
       return SingleChildScrollView(
@@ -2443,6 +2497,9 @@ class _AboutState extends State<_About> {
                 SelectionArea(
                     child: Text('${translate('Fingerprint')}: $fingerprint')
                         .marginSymmetric(vertical: 4.0)),
+              SelectionArea(
+                  child: Text('${translate('ID')}: $myId')
+                      .marginSymmetric(vertical: 4.0)),
               InkWell(
                   onTap: () {
                     launchUrlString('https://rustdesk.com/privacy.html');
@@ -2471,7 +2528,7 @@ class _AboutState extends State<_About> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Ltd.\n$license',
+                            'Copyright © ${DateTime.now().toString().substring(0, 4)} Purslane Tech Pte. Ltd.\n$license',
                             style: const TextStyle(color: Colors.white),
                           ),
                           Text(

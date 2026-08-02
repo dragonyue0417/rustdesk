@@ -941,20 +941,22 @@ impl Client {
 
     #[cfg(not(target_os = "ios"))]
     fn try_stop_clipboard() {
-        // There's a bug here.
-        // If session is closed by the peer, `has_sessions_running()` will always return true.
-        // It's better to check if the active session number.
-        // But it's not a problem, because the clipboard thread does not consume CPU.
-        //
-        // If we want to fix it, we can add a flag to indicate if session is active.
-        // But I think it's not necessary to introduce complexity at this point.
+        // Disconnected Flutter sessions may keep UI handlers alive, so only connected sessions
+        // should block clipboard cleanup.
         #[cfg(feature = "flutter")]
-        if crate::flutter::sessions::has_sessions_running(ConnType::DEFAULT_CONN) {
+        if crate::flutter::sessions::has_connected_sessions_running(ConnType::DEFAULT_CONN) {
             return;
         }
         #[cfg(not(target_os = "android"))]
         clipboard_listener::unsubscribe(Self::CLIENT_CLIPBOARD_NAME);
         CLIPBOARD_STATE.lock().unwrap().running = false;
+        #[cfg(all(feature = "unix-file-copy-paste", target_os = "linux"))]
+        if let Err(e) = crate::clipboard::try_empty_clipboard_files_sync(
+            crate::clipboard::ClipboardSide::Client,
+            0,
+        ) {
+            log::error!("Failed to empty client clipboard files: {}", e);
+        }
         #[cfg(all(feature = "unix-file-copy-paste", target_os = "linux"))]
         clipboard::platform::unix::fuse::uninit_fuse_context(true);
     }
@@ -1399,6 +1401,10 @@ impl AudioHandler {
 
     /// Handle audio format and create an audio decoder.
     pub fn handle_format(&mut self, f: AudioFormat) {
+        if !is_supported_audio_channel_count(f.channels) {
+            log::error!("Unsupported audio channel count: {}", f.channels);
+            return;
+        }
         match AudioDecoder::new(f.sample_rate, if f.channels > 1 { Stereo } else { Mono }) {
             Ok(d) => {
                 let buffer = vec![0.; f.sample_rate as usize * f.channels as usize];
@@ -1535,6 +1541,23 @@ impl AudioHandler {
         stream.play()?;
         self.audio_stream = Some(Box::new(stream));
         Ok(())
+    }
+}
+
+fn is_supported_audio_channel_count(channels: u32) -> bool {
+    (1..=2).contains(&channels)
+}
+
+#[cfg(test)]
+mod audio_format_tests {
+    use super::is_supported_audio_channel_count;
+
+    #[test]
+    fn only_mono_and_stereo_are_supported() {
+        assert!(is_supported_audio_channel_count(1));
+        assert!(is_supported_audio_channel_count(2));
+        assert!(!is_supported_audio_channel_count(0));
+        assert!(!is_supported_audio_channel_count(u32::MAX));
     }
 }
 
@@ -2648,9 +2671,6 @@ impl LoginConfigHandler {
         os_password: String,
         password: Vec<u8>,
     ) -> Message {
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        let my_id = Config::get_id_or(crate::DEVICE_ID.lock().unwrap().clone());
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let my_id = Config::get_id();
         let (my_id, pure_id) = if let Some((id, _, _)) = self.other_server.as_ref() {
             let server = Config::get_rendezvous_server();
@@ -3790,6 +3810,7 @@ pub trait Interface: Send + Clone + 'static + Sized {
 #[derive(Clone)]
 pub enum Data {
     Close,
+    RejectInsecureConnection,
     Login((String, String, String, bool)),
     Message(Message),
     SendFiles((i32, JobType, String, String, i32, bool, bool)),
@@ -3813,9 +3834,31 @@ pub enum Data {
     ElevateWithLogon(String, String),
     NewVoiceCall,
     CloseVoiceCall,
+    ContinueInsecureConnection,
     ResetDecoder(Option<usize>),
     RenameFile((i32, String, String, bool)),
     TakeScreenshot((i32, String)),
+}
+
+pub async fn confirm_insecure_connection(
+    interface: &impl Interface,
+    receiver: &mut UnboundedReceiver<Data>,
+) -> bool {
+    interface.msgbox(
+        "insecure-connection-nocancel-hasclose",
+        "Insecure Connection",
+        "conn-e2ee-unavailable-tip",
+        "",
+    );
+    while let Some(data) = receiver.recv().await {
+        match data {
+            Data::ContinueInsecureConnection => return true,
+            Data::RejectInsecureConnection => return false,
+            Data::Close => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Keycode for key events.
